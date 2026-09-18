@@ -13,11 +13,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Linux only: the measurements read /sys and /proc. The module is written
-        # to degrade to "no sensor" elsewhere, but that path has not been run on a
-        # macOS runner, so it is not claimed here.
-        os: [ubuntu-latest]
-        gcc: [14, 15]
+        # Full gcc spread on Linux (the measuring platform); one gcc each on
+        # Windows/macOS, where the goal is proving the code builds and the
+        # no-sensor degradation path stays green. Hosted runners are VMs, so
+        # none of them exposes a real energy sensor — the fake-sensor tests
+        # carry the accounting, exactly as on hardware-less Linux boxes.
+        include:
+          - os: ubuntu-latest
+            gcc: 14
+          - os: ubuntu-latest
+            gcc: 15
+          - os: windows-latest
+            gcc: 14
+          - os: macos-14
+            gcc: 14
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +55,8 @@ jobs:
       - name: Example (both report formats, real sensor if the runner has one)
         run: fpm run --example measure_run
 
-      - name: Which sensors does the runner expose?
+      - name: Which sensors does the runner expose? (Linux)
+        if: runner.os == 'Linux'
         run: |
           for f in /sys/class/powercap/*/energy_uj; do [ -r "$f" ] && echo "counter: $f"; done
           for d in /sys/class/hwmon/hwmon*; do
@@ -54,3 +64,20 @@ jobs:
           done
           echo "---"
           echo "USER_HZ: $(getconf CLK_TCK)"
+          echo "perf RAPL events:"; perf list 2>/dev/null | grep -c 'power/energy' || echo 0
+
+      - name: Which sensors does the runner expose? (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sw_vers
+          command -v powermetrics >/dev/null && echo "powermetrics present" || echo "no powermetrics"
+          # IOReport energy model (no sudo needed) — the future macOS backend reads this.
+          ioreg -l 2>/dev/null | grep -ci energy || echo "no IOReport energy entries"
+
+      - name: Which sensors does the runner expose? (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Energy Meter Interface devices (the future Windows backend reads these).
+          $emi = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.Service -like '*emi*' -or $_.FriendlyName -like '*energy*' }
+          if ($emi) { $emi | ForEach-Object { "EMI device: $($_.FriendlyName)" } } else { "no EMI device (expected on a VM)" }

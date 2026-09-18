@@ -44,7 +44,10 @@ program test_energy
   integer :: fail_count = 0
   real(real64) :: s
 
-  call execute_command_line('mkdir -p '//DIR)
+  ! Portable directory creation: `mkdir -p` is not valid on Windows cmd, and a
+  ! plain `mkdir` fails when the directory already exists, so the exit status
+  ! is ignored on purpose. The parent (build/) always exists under fpm.
+  call make_dir(DIR)
 
   print '(A)', '== energy: fake sensor, no sensor and the real sensor =='
   call test_no_sensor()
@@ -107,6 +110,12 @@ contains
   end subroutine test_peek_does_not_consume
 
   ! ------------------------------------------------------------- utilities
+  subroutine make_dir(dir)
+    character(*), intent(in) :: dir
+    integer :: st
+    call execute_command_line('mkdir '//dir, exitstat=st)
+  end subroutine make_dir
+
   subroutine set_env(name, value)
     character(*), intent(in) :: name, value
     character(len=1) :: n(64), v(512)
@@ -179,9 +188,12 @@ contains
     j1 = energy_joules()
     call check(j1 == 0.0_real64, 'no sensor: J stays 0.0 after the work')
     call check(cpu1 >= cpu0, 'no sensor: cpu_s is still measured')
+    ! /proc ticks are 10 ms: over a short wall span the quantized cpu_s can read
+    ! a tick above wall (e.g. 30 ms of ticks over 25 ms of wall), so the bound
+    ! carries a +10pp tolerance. It still catches insane values, which is the point.
     call check(energy_cpu_percent() >= 0.0_real64 .and. &
-               energy_cpu_percent() <= 100.0_real64*real(energy_threads(), real64), &
-        'no sensor: cpu_pct within [0, 100*nthreads]')
+               energy_cpu_percent() <= 100.0_real64*real(energy_threads(), real64) + 10.0_real64, &
+        'no sensor: cpu_pct within [0, 100*nthreads] (+tick tolerance)')
     call check(energy_cores_busy() >= 0.0_real64, 'no sensor: cores_busy >= 0')
     js = energy_report_json()
     call check(index(js, '"kind":"none"') > 0 .and. index(js, '"cpu_s"') > 0, &
