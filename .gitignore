@@ -1,0 +1,13 @@
+# fpm build artefacts
+build/
+*.mod
+*.smod
+*.o
+*.a
+
+# scratch written by examples when run from the package root
+measure_run.bin
+
+# python bytecode (tools, if any)
+__pycache__/
+*.pyc

@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / gfortran ${{ matrix.gcc }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux only: the measurements read /sys and /proc. The module is written
+        # to degrade to "no sensor" elsewhere, but that path has not been run on a
+        # macOS runner, so it is not claimed here.
+        os: [ubuntu-latest]
+        gcc: [14, 15]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gfortran and fpm
+        uses: fortran-lang/setup-fortran@v1
+        id: setup-fortran
+        with:
+          compiler: gcc
+          version: ${{ matrix.gcc }}
+
+      - uses: fortran-lang/setup-fpm@v7
+        with:
+          fpm-version: 'v0.13.0'
+
+      - name: Build
+        run: fpm build
+
+      - name: Test
+        run: fpm test
+
+      - name: Test with runtime checks
+        # -Wcharacter-truncation is not part of -Wall/-Wextra, and -fcheck=all is
+        # what catches the "unallocated allocatable" traps this module has to avoid.
+        run: fpm test --profile debug --flag "-Wall -Wextra -Wcharacter-truncation -fcheck=all -fbacktrace -finit-real=snan"
+
+      - name: Example (both report formats, real sensor if the runner has one)
+        run: fpm run --example measure_run
+
+      - name: Which sensors does the runner expose?
+        run: |
+          for f in /sys/class/powercap/*/energy_uj; do [ -r "$f" ] && echo "counter: $f"; done
+          for d in /sys/class/hwmon/hwmon*; do
+            [ -r "$d/power1_input" ] && echo "power: $d ($(cat $d/name 2>/dev/null))"
+          done
+          echo "---"
+          echo "USER_HZ: $(getconf CLK_TCK)"
