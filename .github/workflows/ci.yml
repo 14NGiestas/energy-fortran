@@ -38,8 +38,16 @@ jobs:
           version: ${{ matrix.gcc }}
 
       - uses: fortran-lang/setup-fpm@v7
+        if: runner.os != 'macOS'
         with:
           fpm-version: 'v0.13.0'
+
+      - name: Install fpm (macOS)
+        # setup-fpm only ships an x86_64 binary linked against gcc@12's
+        # libgfortran, which cannot run on the arm64 runners — Homebrew's
+        # bottled fpm works instead.
+        if: runner.os == 'macOS'
+        run: brew install fpm
 
       - name: Build
         run: fpm build

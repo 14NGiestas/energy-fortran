@@ -20,11 +20,23 @@
 
 program test_energy
   use, intrinsic :: iso_fortran_env, only: int64, real64
-  use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
+  use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char, c_null_ptr, &
+      c_loc, c_ptr
   use fortran_energy_mod
   implicit none
 
   interface
+#ifdef _WIN32
+    ! No setenv/unsetenv in the Windows C library: SetEnvironmentVariableA
+    ! sets when VALUE points at a string and DELETES when it is NULL.
+    ! (x86_64 has a single calling convention, so bind(C) matches WINAPI.)
+    function win_setenv(name, value) bind(C, name="SetEnvironmentVariableA") result(ok)
+      import :: c_char, c_int, c_ptr
+      character(kind=c_char), dimension(*) :: name
+      type(c_ptr), value :: value
+      integer(c_int) :: ok
+    end function win_setenv
+#else
     function c_setenv(name, value, overwrite) bind(C, name="setenv") result(rc)
       import :: c_char, c_int
       character(kind=c_char), dimension(*) :: name
@@ -38,6 +50,7 @@ program test_energy
       character(kind=c_char), dimension(*) :: name
       integer(c_int) :: rc
     end function c_unsetenv
+#endif
   end interface
 
   character(len=*), parameter :: DIR = 'build/energy_test'
@@ -118,8 +131,13 @@ contains
 
   subroutine set_env(name, value)
     character(*), intent(in) :: name, value
-    character(len=1) :: n(64), v(512)
-    integer :: i, rc
+    character(len=1), target :: n(64), v(512)
+    integer :: i
+#ifdef _WIN32
+    integer(c_int) :: ok
+#else
+    integer :: rc
+#endif
     n = c_null_char
     v = c_null_char
     do i = 1, min(len_trim(name), 63)
@@ -128,18 +146,31 @@ contains
     do i = 1, min(len_trim(value), 511)
       v(i) = value(i:i)
     end do
+#ifdef _WIN32
+    ok = win_setenv(n, c_loc(v))
+#else
     rc = c_setenv(n, v, 1_c_int)
+#endif
   end subroutine set_env
 
   subroutine unset_env(name)
     character(*), intent(in) :: name
     character(len=1) :: n(64)
-    integer :: i, rc
+    integer :: i
+#ifdef _WIN32
+    integer(c_int) :: ok
+#else
+    integer :: rc
+#endif
     n = c_null_char
     do i = 1, min(len_trim(name), 63)
       n(i) = name(i:i)
     end do
+#ifdef _WIN32
+    ok = win_setenv(n, c_null_ptr)
+#else
     rc = c_unsetenv(n)
+#endif
   end subroutine unset_env
 
   subroutine write_counter(path, v)

@@ -30,7 +30,7 @@ source-dir = "src"
 [[test]]
 name = "test_energy"
 source-dir = "test"
-main = "test_energy.f90"
+main = "test_energy.F90"
 
 [[example]]
 name = "measure_run"
