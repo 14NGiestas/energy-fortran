@@ -26,12 +26,21 @@ program test_energy
   use fortran_energy_mod
   implicit none
 
-  character(len=*), parameter :: DIR = 'build/energy_test'
+  ! Scratch files live directly in the system temp dir — no subdirectory, so no
+  ! mkdir, no shell, no platform branches, no C. Falls back to build/ (always
+  ! present under fpm, gitignored). Fixed length on purpose: no allocatable
+  ! descriptors cross procedure boundaries anywhere in this test.
+  ! Layout mirrors sysfs: the range file MUST be max_energy_range_uj next to
+  ! the counter (that is what the module reads), so only it is unprefixed.
+  character(len=512) :: FDIR, FCNT, FRNG, FREP, FNOPE
   integer :: fail_count = 0
   real(real64) :: s
 
-  ! See make_dir below for why this goes through a helper.
-  call make_dir(DIR)
+  FDIR = temp_dir()
+  FCNT = trim(FDIR)//'/energy_fortran_energy_uj'
+  FRNG = trim(FDIR)//'/max_energy_range_uj'
+  FREP = trim(FDIR)//'/energy_fortran_report.txt'
+  FNOPE = trim(FDIR)//'/energy_fortran_does_not_exist'
 
   print '(A)', '== energy: fake sensor, no sensor and the real sensor =='
   call test_no_sensor()
@@ -62,18 +71,16 @@ contains
   ! 0.5 J deltas around a peek must both land in the interval the mark closes.
   subroutine test_peek_does_not_consume()
     type(energy_interval_t) :: pk, iv
-    character(len=:), allocatable :: cnt
     print '(A)', '-- 5. energy_peek(): read without consuming the interval'
-    cnt = DIR//'/energy_uj'
-    call write_counter(cnt, 0_int64)
-    call write_counter(DIR//'/max_energy_range_uj', 1000000000_int64)
-    call energy_init(sensor=cnt)
+    call write_counter(FCNT, 0_int64)
+    call write_counter(FRNG, 1000000000_int64)
+    call energy_init(sensor=FCNT)
     call check(energy_ready(), 'peek: fake counter is live')
-    call write_counter(cnt, 500000_int64)         ! +0.5 J
+    call write_counter(FCNT, 500000_int64)         ! +0.5 J
     call energy_peek(pk)
     call check(abs(pk%j - 0.5_real64) < 1.0e-9_real64, &
         'peek: J = 0.5 J of the open interval ('//trim(fmt(pk%j, 9))//')')
-    call write_counter(cnt, 1000000_int64)        ! +0.5 J more
+    call write_counter(FCNT, 1000000_int64)        ! +0.5 J more
     call energy_mark('peeked', iv=iv)
     call check(abs(iv%j - 1.0_real64) < 1.0e-9_real64, &
         'mark after peek sees BOTH deltas = 1.0 J ('//trim(fmt(iv%j, 9))//')')
@@ -92,37 +99,22 @@ contains
   end subroutine test_peek_does_not_consume
 
   ! ------------------------------------------------------------- utilities
-  ! Portable directory creation without C or dependencies: cmd.exe (which runs
-  ! execute_command_line on Windows) takes neither `mkdir -p` nor `/`
-  ! separators, while POSIX mkdir wants `-p` for nesting. The `OS` variable is
-  ! `Windows_NT` under both cmd and git-bash, which selects the spelling.
-  ! Failures are ignored: the parent (build/) exists under fpm and the
-  ! directory itself may already exist from a previous run.
-  subroutine make_dir(dir)
-    character(*), intent(in) :: dir
-    character(len=256) :: cmd, os
-    integer :: i, st
-    call get_environment_variable('OS', os)
-    if (index(os, 'Windows') > 0) then
-      cmd = 'mkdir '
-      do i = 1, min(len_trim(dir), 240)
-        if (dir(i:i) == '/') then
-          cmd = trim(cmd)//'\'
-        else
-          cmd = trim(cmd)//dir(i:i)
-        end if
-      end do
-    else
-      cmd = 'mkdir -p '//dir
-    end if
-    call execute_command_line(cmd, exitstat=st)
-  end subroutine make_dir
+  function temp_dir() result(p)
+    character(len=512) :: p
+    character(len=256) :: t
+    call get_environment_variable('TMPDIR', t)
+    if (len_trim(t) == 0) call get_environment_variable('TEMP', t)
+    if (len_trim(t) == 0) call get_environment_variable('TMP', t)
+    if (len_trim(t) == 0) t = 'build'
+    p = trim(t)
+  end function temp_dir
 
   subroutine write_counter(path, v)
     character(*), intent(in) :: path
     integer(int64), intent(in) :: v
     integer :: u, ios
-    open (newunit=u, file=path, status='replace', action='write', iostat=ios)
+    ! trim: fixed-length paths carry blanks and open() does not trim them.
+    open (newunit=u, file=trim(path), status='replace', action='write', iostat=ios)
     if (ios /= 0) then
       call check(.false., 'could not write the fake sensor '//path)
       return
@@ -178,8 +170,6 @@ contains
 
   ! ------------------------------------------- 2. fake counter (exact deltas)
   subroutine test_fake_counter()
-    character(len=*), parameter :: cnt = DIR//'/energy_uj'
-    character(len=*), parameter :: rng = DIR//'/max_energy_range_uj'
     integer(int64), parameter :: TICKS = 20_int64, DELTA = 500000_int64  ! 0.5 J
     integer(int64), parameter :: RANGE = 1000000000_int64               ! 1000 J
     integer(int64) :: raw, i
@@ -187,11 +177,11 @@ contains
     real(real64) :: w
     integer :: u, ios
     print '(A)', '-- 2. fake counter: exact J, monotone, with WRAP'
-    call write_counter(cnt, 1000_int64)
-    open (newunit=u, file=rng, status='replace', action='write', iostat=ios)
+    call write_counter(FCNT, 1000_int64)
+    open (newunit=u, file=trim(FRNG), status='replace', action='write', iostat=ios)
     write (u, '(I0)') RANGE
     close (u)
-    call energy_init(sensor=cnt)
+    call energy_init(sensor=FCNT)
     call check(energy_ready(), 'fake counter: ready')
     call check(energy_kind_name() == 'counter', 'fake counter: kind = counter')
     call check(index(energy_sensor(), 'energy_uj') > 0, 'fake counter: sensor = path')
@@ -200,7 +190,7 @@ contains
     raw = 1000_int64
     do i = 1, TICKS
       raw = raw + DELTA
-      call write_counter(cnt, raw)
+      call write_counter(FCNT, raw)
       j = energy_joules()
       jexp = real(i*DELTA, real64)*1.0e-6_real64
       call check(abs(j - jexp) < 1.0e-9_real64 .and. j >= jprev, &
@@ -209,18 +199,18 @@ contains
     end do
     ! WRAP: a physical roll over. The counter is near the end of its range, then
     ! restarts at 50 -> the delta is (50 - (RANGE-5)) + RANGE = 55 uJ.
-    call write_counter(cnt, RANGE - 5_int64)
+    call write_counter(FCNT, RANGE - 5_int64)
     jprev = energy_joules()
-    call write_counter(cnt, 50_int64)
+    call write_counter(FCNT, 50_int64)
     j = energy_joules()
     call check(j > jprev .and. abs((j - jprev) - 55.0e-6_real64) < 1.0e-9_real64, &
         'fake counter: WRAP added the range (delta='//trim(fmt(j - jprev, 9))//' J, expected 0.000000055)')
     ! A backwards jump LARGER than the range cannot be a wrap: it is a driver
     ! reset (or a counter whose width changed and whose range file is stale). A
     ! reset is not energy, so J stays FLAT -- never negative, never invented.
-    call write_counter(cnt, 2000000000_int64)      ! bogus: bigger than the range
+    call write_counter(FCNT, 2000000000_int64)      ! bogus: bigger than the range
     jprev = energy_joules()
-    call write_counter(cnt, 7_int64)
+    call write_counter(FCNT, 7_int64)
     j = energy_joules()
     call check(abs(j - jprev) < 1.0e-12_real64, &
         'fake counter: backwards jump > range does not move J (delta='// &
@@ -228,8 +218,8 @@ contains
     w = energy_watts()
     call check(w >= 0.0_real64, 'fake counter: watts >= 0')
     ! an unreadable override must not explode nor invent J
-    call write_counter(cnt, 0_int64)
-    call energy_init(sensor=DIR//'/does_not_exist')
+    call write_counter(FCNT, 0_int64)
+    call energy_init(sensor=FNOPE)
     call check(.not. energy_ready() .and. energy_joules() == 0.0_real64, &
         'invalid override: neutral, no crash')
   end subroutine test_fake_counter
@@ -293,12 +283,12 @@ contains
                index(js, ':.') == 0 .and. index(js, '1.}') == 0, &
         'JSON: numbers are well formed (no leading dot, no trailing dot)')
     ! the key=value report prints one line per phase (scratch file)
-    open (newunit=u, file=DIR//'/report.txt', status='replace', action='write', iostat=ios)
+    open (newunit=u, file=trim(FREP), status='replace', action='write', iostat=ios)
     call energy_report(u)
     close (u)
     saw_a = .false.
     saw_tot = .false.
-    open (newunit=u, file=DIR//'/report.txt', status='old', action='read', iostat=ios)
+    open (newunit=u, file=trim(FREP), status='old', action='read', iostat=ios)
     do
       read (u, '(A)', iostat=ios) line
       if (ios /= 0) exit
