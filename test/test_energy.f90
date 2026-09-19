@@ -30,9 +30,7 @@ program test_energy
   integer :: fail_count = 0
   real(real64) :: s
 
-  ! Portable directory creation: `mkdir -p` is not valid on Windows cmd, and a
-  ! plain `mkdir` fails when the directory already exists, so the exit status
-  ! is ignored on purpose. The parent (build/) always exists under fpm.
+  ! See make_dir below for why this goes through a helper.
   call make_dir(DIR)
 
   print '(A)', '== energy: fake sensor, no sensor and the real sensor =='
@@ -94,10 +92,30 @@ contains
   end subroutine test_peek_does_not_consume
 
   ! ------------------------------------------------------------- utilities
+  ! Portable directory creation without C or dependencies: cmd.exe (which runs
+  ! execute_command_line on Windows) takes neither `mkdir -p` nor `/`
+  ! separators, while POSIX mkdir wants `-p` for nesting. The `OS` variable is
+  ! `Windows_NT` under both cmd and git-bash, which selects the spelling.
+  ! Failures are ignored: the parent (build/) exists under fpm and the
+  ! directory itself may already exist from a previous run.
   subroutine make_dir(dir)
     character(*), intent(in) :: dir
-    integer :: st
-    call execute_command_line('mkdir '//dir, exitstat=st)
+    character(len=256) :: cmd, os
+    integer :: i, st
+    call get_environment_variable('OS', os)
+    if (index(os, 'Windows') > 0) then
+      cmd = 'mkdir '
+      do i = 1, min(len_trim(dir), 240)
+        if (dir(i:i) == '/') then
+          cmd = trim(cmd)//'\'
+        else
+          cmd = trim(cmd)//dir(i:i)
+        end if
+      end do
+    else
+      cmd = 'mkdir -p '//dir
+    end if
+    call execute_command_line(cmd, exitstat=st)
   end subroutine make_dir
 
   subroutine write_counter(path, v)
