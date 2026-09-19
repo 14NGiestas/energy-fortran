@@ -537,9 +537,13 @@ contains
 
   ! Find the sensor, zero accumulators and phases. Safe to call again.
   ! `ticks` = USER_HZ from /proc (default 100); ENERGY_TICKS also accepted.
+  ! `sensor` = explicit path (counter or power file): the inside control, like
+  ! mfi's mfi_force_gpu. Without it, ENERGY_SENSOR (the outside control, set by
+  ! the caller or the launcher) is honored; without either, auto-discovery runs.
   ! NEVER aborts: without a sensor J stays 0 and the rest (cpu/io/phases) holds.
-  subroutine energy_init(ticks)
+  subroutine energy_init(ticks, sensor)
     real(real64), intent(in), optional :: ticks
+    character(*), intent(in), optional :: sensor
     character(len=256) :: env, nm, hw
     character(len=512) :: p, cand
     character(len=512) :: names(64)
@@ -570,11 +574,13 @@ contains
     e_phases%wr_mb = 0.0_real64
     e_phases%tokens = 0.0_real64
 
-    ! (0) explicit override: ENERGY_SENSOR=<path>. It forces a sensor (or a test
-    ! file) and also switches measurement OFF by pointing at a missing path — an
-    ! explicit request does not fall back to automatic discovery.
+    ! (0) explicit override: the `sensor` argument first, ENERGY_SENSOR second.
+    ! It forces a sensor (or a test file) and also switches measurement OFF by
+    ! pointing at a missing path — an explicit request does not fall back to
+    ! automatic discovery.
     env = ''
-    call get_environment_variable('ENERGY_SENSOR', env)
+    if (present(sensor)) env = sensor
+    if (len_trim(env) == 0) call get_environment_variable('ENERGY_SENSOR', env)
     if (len_trim(env) > 0) then
       if (index(env, 'power') > 0) then
         if (use_power(trim(env), basename_of(trim(env)))) then
@@ -587,7 +593,7 @@ contains
           return
         end if
       end if
-      e_scope = 'ENERGY_SENSOR='//trim(env)//' (unreadable, energy stays 0)'
+      e_scope = 'explicit sensor '//trim(env)//' (unreadable, energy stays 0)'
       call base_reset()
       return
     end if

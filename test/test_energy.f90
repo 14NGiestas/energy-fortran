@@ -15,43 +15,16 @@
 !   6. energy_peek() reads the open interval WITHOUT consuming it (the mark after
 !      a peek still sees the whole span) -- that is what a progress trace needs.
 !
-! The fake sensor uses ENERGY_SENSOR (the module's override), set through libc
-! setenv (no child process, no temporary file outside the repo). Runs in <2 s.
+! Sensor control is an argument, never the environment: energy_init(sensor=...)
+! points at a fake counter, a missing path (forced degradation), or nothing
+! (auto-discovery). The ENERGY_SENSOR environment variable offers the same
+! override from the outside (CI/shell); the test never writes the environment.
+! Runs in <5 s.
 
 program test_energy
   use, intrinsic :: iso_fortran_env, only: int64, real64
-  use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char, c_null_ptr, &
-      c_loc, c_ptr
   use fortran_energy_mod
   implicit none
-
-  interface
-#ifdef _WIN32
-    ! No setenv/unsetenv in the Windows C library: SetEnvironmentVariableA
-    ! sets when VALUE points at a string and DELETES when it is NULL.
-    ! (x86_64 has a single calling convention, so bind(C) matches WINAPI.)
-    function win_setenv(name, value) bind(C, name="SetEnvironmentVariableA") result(ok)
-      import :: c_char, c_int, c_ptr
-      character(kind=c_char), dimension(*) :: name
-      type(c_ptr), value :: value
-      integer(c_int) :: ok
-    end function win_setenv
-#else
-    function c_setenv(name, value, overwrite) bind(C, name="setenv") result(rc)
-      import :: c_char, c_int
-      character(kind=c_char), dimension(*) :: name
-      character(kind=c_char), dimension(*) :: value
-      integer(c_int), value :: overwrite
-      integer(c_int) :: rc
-    end function c_setenv
-
-    function c_unsetenv(name) bind(C, name="unsetenv") result(rc)
-      import :: c_char, c_int
-      character(kind=c_char), dimension(*) :: name
-      integer(c_int) :: rc
-    end function c_unsetenv
-#endif
-  end interface
 
   character(len=*), parameter :: DIR = 'build/energy_test'
   integer :: fail_count = 0
@@ -96,8 +69,7 @@ contains
     cnt = DIR//'/energy_uj'
     call write_counter(cnt, 0_int64)
     call write_counter(DIR//'/max_energy_range_uj', 1000000000_int64)
-    call set_env('ENERGY_SENSOR', cnt)
-    call energy_init()
+    call energy_init(sensor=cnt)
     call check(energy_ready(), 'peek: fake counter is live')
     call write_counter(cnt, 500000_int64)         ! +0.5 J
     call energy_peek(pk)
@@ -119,7 +91,6 @@ contains
         'record: sensor/scope/kind present and self_measured=.true.')
     call check(trim(iv%kind) == trim(energy_kind_name()), &
         'record: kind matches energy_kind_name()')
-    call unset_env('ENERGY_SENSOR')
   end subroutine test_peek_does_not_consume
 
   ! ------------------------------------------------------------- utilities
@@ -128,50 +99,6 @@ contains
     integer :: st
     call execute_command_line('mkdir '//dir, exitstat=st)
   end subroutine make_dir
-
-  subroutine set_env(name, value)
-    character(*), intent(in) :: name, value
-    character(len=1), target :: n(64), v(512)
-    integer :: i
-#ifdef _WIN32
-    integer(c_int) :: ok
-#else
-    integer :: rc
-#endif
-    n = c_null_char
-    v = c_null_char
-    do i = 1, min(len_trim(name), 63)
-      n(i) = name(i:i)
-    end do
-    do i = 1, min(len_trim(value), 511)
-      v(i) = value(i:i)
-    end do
-#ifdef _WIN32
-    ok = win_setenv(n, c_loc(v))
-#else
-    rc = c_setenv(n, v, 1_c_int)
-#endif
-  end subroutine set_env
-
-  subroutine unset_env(name)
-    character(*), intent(in) :: name
-    character(len=1) :: n(64)
-    integer :: i
-#ifdef _WIN32
-    integer(c_int) :: ok
-#else
-    integer :: rc
-#endif
-    n = c_null_char
-    do i = 1, min(len_trim(name), 63)
-      n(i) = name(i:i)
-    end do
-#ifdef _WIN32
-    ok = win_setenv(n, c_null_ptr)
-#else
-    rc = c_unsetenv(n)
-#endif
-  end subroutine unset_env
 
   subroutine write_counter(path, v)
     character(*), intent(in) :: path
@@ -203,8 +130,7 @@ contains
     real(real64) :: j0, j1, w, cpu0, cpu1
     character(len=:), allocatable :: js
     print '(A)', '-- 1. no sensor: neutral energy, CPU/IO keep working'
-    call set_env('ENERGY_SENSOR', '/nonexistent/energy_uj')
-    call energy_init()
+    call energy_init(sensor='/nonexistent/energy_uj')
     call check(.not. energy_ready(), 'no sensor: energy_ready() = .false.')
     call check(energy_kind_name() == 'none', 'no sensor: kind = none')
     j0 = energy_joules()
@@ -247,8 +173,7 @@ contains
     open (newunit=u, file=rng, status='replace', action='write', iostat=ios)
     write (u, '(I0)') RANGE
     close (u)
-    call set_env('ENERGY_SENSOR', cnt)
-    call energy_init()
+    call energy_init(sensor=cnt)
     call check(energy_ready(), 'fake counter: ready')
     call check(energy_kind_name() == 'counter', 'fake counter: kind = counter')
     call check(index(energy_sensor(), 'energy_uj') > 0, 'fake counter: sensor = path')
@@ -286,9 +211,7 @@ contains
     call check(w >= 0.0_real64, 'fake counter: watts >= 0')
     ! an unreadable override must not explode nor invent J
     call write_counter(cnt, 0_int64)
-    call unset_env('ENERGY_SENSOR')
-    call set_env('ENERGY_SENSOR', DIR//'/does_not_exist')
-    call energy_init()
+    call energy_init(sensor=DIR//'/does_not_exist')
     call check(.not. energy_ready() .and. energy_joules() == 0.0_real64, &
         'invalid override: neutral, no crash')
   end subroutine test_fake_counter
@@ -298,7 +221,6 @@ contains
     real(real64) :: j1, j2, j3, w
     integer :: n
     print '(A)', '-- 3. the machine s real sensor (when present)'
-    call unset_env('ENERGY_SENSOR')
     call energy_init()
     if (.not. energy_ready()) then
       print '(A)', '  skip  no sensor on this machine (powercap/hwmon)'
@@ -330,7 +252,6 @@ contains
     integer :: u, ios
     logical :: saw_a, saw_tot
     print '(A)', '-- 4. phases (marks) accumulate and the report comes out'
-    call unset_env('ENERGY_SENSOR')
     call energy_init()
     s = 0.0_real64
     call burn(1000000)

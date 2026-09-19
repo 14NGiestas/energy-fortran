@@ -63,6 +63,16 @@ jobs:
       - name: Example (both report formats, real sensor if the runner has one)
         run: fpm run --example measure_run
 
+      - name: ENERGY_SENSOR override works (env is orchestrator-owned)
+        # The outside control, mfi-style: the shell sets it, Fortran only reads
+        # it. A fake counter file proves the env path end-to-end on every OS.
+        shell: bash
+        run: |
+          mkdir -p build/energy_test
+          printf '1000000\n' > build/energy_test/energy_uj
+          printf '1000000000\n' > build/energy_test/max_energy_range_uj
+          ENERGY_SENSOR=build/energy_test/energy_uj fpm run --example measure_run | grep -F "build/energy_test/energy_uj"
+
       - name: Which sensors does the runner expose? (Linux)
         if: runner.os == 'Linux'
         run: |

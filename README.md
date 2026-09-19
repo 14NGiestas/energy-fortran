@@ -63,11 +63,13 @@ sidecar that can get lost.
 
 ### Sensor discovery order
 
-1. `ENERGY_SENSOR` environment variable, if set: forces that exact path (a
-   counter path is read as a counter, a path containing `power` as instant
+1. The `sensor` argument to `energy_init`, if present: forces that exact path
+   (a counter path is read as a counter, a path containing `power` as instant
    power). Pointing it at an unreadable path switches measurement off
-   (`kind = none`) without falling back to auto-discovery — useful to pin a
-   domain on a multi-socket box, or to test the no-sensor path.
+   (`kind = none`) without falling back to auto-discovery.
+2. `ENERGY_SENSOR` environment variable, if set: same semantics, from the
+   outside — useful to pin a domain on a multi-socket box, or to switch
+   measurement off, without touching the code.
 2. `powercap` counters, preferring `package-*`/`psys` over subdomains.
 3. `hwmon` instantaneous power, in the order `amdgpu`, `zenpower`,
    `amd_energy`, `rapl`, `coretemp`, `k10temp`.
@@ -78,7 +80,7 @@ sidecar that can get lost.
 
 | procedure | what it gives |
 |---|---|
-| `energy_init(ticks)` | find a sensor (or stay neutral), zero accumulators and phases. `ticks` overrides `USER_HZ` (default 100) |
+| `energy_init(ticks, sensor)` | find a sensor (or stay neutral), zero accumulators and phases. `ticks` overrides `USER_HZ` (default 100); `sensor` forces that exact path — the inside control, for pinning a domain or a test file without touching the environment |
 | `energy_ready()` | `.true.` when an energy sensor was found |
 | `energy_joules()` | joules accumulated since init (samples/integrates the sensor) |
 | `energy_watts()` | average power since the previous call (or since init) |
@@ -187,7 +189,7 @@ much more tightly — and is why the documentation recommends calling
 
 `fpm test` runs in well under 5 s and needs no sensor:
 
-1. **no sensor** (forced with `ENERGY_SENSOR=/nonexistent`): `energy_ready()`
+1. **no sensor** (forced with `sensor='/nonexistent/energy_uj'`): `energy_ready()`
    is `.false.`, energy is `0.0`, and `cpu_s`/`cores_busy`/`cpu_pct` are still
    measured and reported;
 2. **a fake counter** written by the test itself: J matches
